@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.6",
     "httpx>=0.28.1",
+    "ipykernel>=6.29.5",
     "pydantic>=2.10.4",
+    "pydub>=0.25.1",
+    "requests>=2.32.3",
     "uvicorn>=0.34.0",
 ]
