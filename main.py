@@ -1,15 +1,15 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from manzai.player import ManzaiVideoGenerator
+from pydantic import BaseModel, Field
+from typing import List
 import httpx
 import io
-import logging
-import requests
-
-# ロギングの設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import sounddevice as sd
+import soundfile as sf
+import numpy as np
+import base64
 
 app = FastAPI()
 
@@ -22,7 +22,8 @@ app.add_middleware(
 )
 
 VOICEVOX_URL = "http://localhost:50021"
-TIMEOUT_SECONDS = 30.0
+N_ROUND = 5 #丸める桁数
+
 
 class TextRequest(BaseModel):
     text: str = Field(..., min_length=1)
@@ -31,176 +32,218 @@ class TextRequest(BaseModel):
     speed_scale: float = Field(1.0, ge=0.5, le=2.0)
     pitch_scale: float = Field(0.0, ge=-0.15, le=0.15)
     intonation_scale: float = Field(0.0, ge=0.0, le=3.0)
-    pre_phoneme_length: float = Field(0.1, ge=-5.0, le=5.0) 
-    post_phoneme_length: float = Field(0.1, ge=0.0, le=5.0)  
-    
+    pre_phoneme_length: float = Field(0.1, ge=-5.0, le=5.0)
+    post_phoneme_length: float = Field(0.0, ge=0.0, le=5.0)
 
-    @validator('text')
-    def text_must_not_be_empty(cls, v):
-        if not v.strip():
-            raise ValueError('Text cannot be empty or only whitespace')
-        return v
+class ManzaiRequest(BaseModel):
+    title:str
+    left_chara:str #キャラ名
+    right_chara:str
+    left_chara_path:str #キャラの画像パス
+    right_chara_path:str
+    voices: List[TextRequest]
+
+def debug_play(audio_binary: bytes):
+    """デバッグ用の音声再生関数"""
+    try:
+        # バイナリデータをメモリ上のバッファに変換
+        audio_buffer = io.BytesIO(audio_binary)
+    
+        # soundfileで読み込み
+        data, samplerate = sf.read(audio_buffer)
+        
+        print(f"音声データ情報:")
+        print(f"- サンプルレート: {samplerate}Hz")
+        print(f"- データ形状: {data.shape}")
+        print(f"- データタイプ: {data.dtype}")
+        print(f"- 再生時間: {len(data)/samplerate:.2f}秒")
+        print("")
+        
+        # 音声を再生
+        sd.play(data, samplerate)
+        sd.wait()  # 再生完了まで待機
+        
+        return True
+        
+    except Exception as e:
+        print(f"デバッグ再生でエラーが発生: {str(e)}\n")
+        return False
 
 @app.post("/synthesis")
-async def synthesize_speech(request: TextRequest):
+async def generate_vvox_audio(request: TextRequest):
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            logger.info(f"Processing synthesis request for text: {request.text[:50]}...")
-            
-            # VOICEVOXサーバーの状態チェック
-            try:
-                health_check = await client.get(f"{VOICEVOX_URL}/version")
-                if health_check.status_code != 200:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="VOICEVOX server is not responding properly"
-                    )
-            except httpx.RequestError:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Cannot connect to VOICEVOX server"
-                )
-
-            # 音声合成用のクエリを作成
-            try:
-                query_response = await client.post(
-                    f"{VOICEVOX_URL}/audio_query",
-                    params={
-                        "text": request.text,
-                        "speaker": request.speaker_id
-                    }
-                )
-                query_response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Audio query failed: {str(e)}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to generate audio query: {str(e)}"
-                )
-
-            query_data = query_response.json()
-            
-            # パラメータの設定とログ出力
-            logger.info(
-                f"Synthesis parameters - Volume: {request.volume_scale}, "
-                f"Speed: {request.speed_scale}, Pitch: {request.pitch_scale}, "
-                f"Intonation: {request.intonation_scale}"
+        async with httpx.AsyncClient() as client:
+            # 音声合成用のクエリを作成（基本パラメータのみ）
+            query_response = await client.post(
+                f"{VOICEVOX_URL}/audio_query",
+                params={
+                    "text": request.text,
+                    "speaker": request.speaker_id
+                }
             )
             
+            if query_response.status_code != 200:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Failed to generate audio query"
+                )
+            
+            # クエリデータを取得して各パラメータを更新
+
+            ## 開始無音がマイナス（重複）の場合は、開始無音を0secにする。
+            pre_phoneme_length = 0 if request.pre_phoneme_length < 0  else request.pre_phoneme_length
+            query_data = query_response.json()
             query_data.update({
                 "volumeScale": request.volume_scale,
                 "speedScale": request.speed_scale,
                 "pitchScale": request.pitch_scale,
-                "intonationScale": request.intonation_scale
+                "intonationScale": request.intonation_scale,
+                "prePhonemeLength": pre_phoneme_length,
+                "postPhonemeLength": request.post_phoneme_length
             })
             
-            # 音声合成を実行
-            try:
-                synthesis_response = await client.post(
-                    f"{VOICEVOX_URL}/synthesis",
-                    params={"speaker": request.speaker_id},
-                    json=query_data
-                )
-                synthesis_response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Synthesis failed: {str(e)}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to synthesize audio: {str(e)}"
-                )
             
-            logger.info("Successfully synthesized audio")
+            # 更新したパラメータで音声合成を実行
+            synthesis_response = await client.post(
+                f"{VOICEVOX_URL}/synthesis",
+                params={"speaker": request.speaker_id},
+                json=query_data
+            )
+            
+            if synthesis_response.status_code != 200:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Failed to synthesize audio"
+                )
+            audio_data = io.BytesIO(synthesis_response.content)
+
+
+
             return StreamingResponse(
                 io.BytesIO(synthesis_response.content),
                 media_type="audio/wav"
             )
             
-    except httpx.TimeoutException:
-        logger.error("Request timed out")
-        raise HTTPException(
-            status_code=504,
-            detail="Request timed out"
-        )
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"An unexpected error occurred: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
-# def create_audio_query(self, text: str, speaker_id: int = 1, timeout: int = 10) -> Dict:
-#     """音声合成用のクエリを作成します"""
-#     params = {
-#         "text": text,
-#         "speaker": speaker_id
-#     }
 
-    
-#     try:
-#         response = requests.post(
-#             f"{self.base_url}/audio_query",
-#             params=params,
-#             timeout=timeout
-#         )
-#         response.raise_for_status()
-#         return response.json()
-        
-#     except requests.exceptions.RequestException as e:
-#         raise Exception(f"クエリの作成に失敗しました: {str(e)}")
-
-# @app.post("/generate_video")
-# async def generate_video(json_list: list[TextRequest]):
-#     try:
-#         response_list = []
-#         for item in json_list:
-#             query_response = requests.post(
-#                 f"{VOICEVOX_URL}/audio_query",
-#                 params={"text": item.text, "speaker": item.speaker_id}
-#             )
-#             query_data = query_response.json()
-            
-#             query_data.update({
-#                 "volumeScale": item.volume_scale,
-#                 "speedScale": item.speed_scale,
-#                 "pitchScale": item.pitch_scale,
-#                 "intonationScale": item.intonation_scale,
-#                 "prePhonemeLength": max(0.0, item.pre_phoneme_length),  # VOICEVOXには負の値を送らない
-#                 "postPhonemeLength": item.post_phoneme_length
-#             })
-            
-#             synthesis_response = requests.post(
-#                 f"{VOICEVOX_URL}/synthesis",
-#                 params={"speaker": item.speaker_id},
-#                 json=query_data
-#             )
-#             response_list.append(AudioSegment.from_wav(io.BytesIO(synthesis_response.content)))
-
-#         combined_audio = response_list[0]
-#         for i, audio in enumerate(response_list[1:], 1):
-#             if json_list[i].pre_phoneme_length < 0:
-#                 overlap_ms = int(-json_list[i].pre_phoneme_length * 1000)
-#                 position = len(combined_audio) - overlap_ms
-#                 combined_audio = combined_audio.overlay(audio, position=position)
-#             else:
-#                 combined_audio += audio
-
-#         buffer = io.BytesIO()
-#         combined_audio.export(buffer, format="wav")
-#         buffer.seek(0)
-#         return StreamingResponse(buffer, media_type="audio/wav")
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# サーバー起動時の確認
-@app.on_event("startup")
-async def startup_event():
+@app.post("/concat")
+async def concat_vvox_audio(request: ManzaiRequest):
+    """漫才の音声を作成する"""
+    print("開始: concat_vvox_audio")
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{VOICEVOX_URL}/version")
-            if response.status_code == 200:
-                logger.info("Successfully connected to VOICEVOX server")
-            else:
-                logger.warning("VOICEVOX server is not responding properly")
+        audio_arrays = []  # NumPy配列として音声データを保持
+        sample_rate = 24000
+        current_position = 0  # 現在の位置（秒）
+        processed_voices = []  # 時間情報を追加した音声データを保存
+        
+        async with httpx.AsyncClient() as client:
+            for i, voice in enumerate(request.voices):
+                print(f"音声{i+1}の処理開始")
+                
+                # voice辞書をコピーして新しい辞書を作成
+                processed_voice = dict(voice)
+                
+                query_response = await client.post(
+                    f"{VOICEVOX_URL}/audio_query",
+                    params={"text": voice.text, "speaker": voice.speaker_id}
+                )
+                
+                query_data = query_response.json()
+                pre_phoneme_length = 0 if voice.pre_phoneme_length < 0  else voice.pre_phoneme_length #最初の音声の開始無音がマイナスの場合、0に変換。
+                query_data.update({
+                    "volumeScale": voice.volume_scale,
+                    "speedScale": voice.speed_scale,
+                    "pitchScale": voice.pitch_scale,
+                    "intonationScale": voice.intonation_scale,
+                    "prePhonemeLength": pre_phoneme_length,
+                    "postPhonemeLength": voice.post_phoneme_length
+                })
+                
+                synthesis_response = await client.post(
+                    f"{VOICEVOX_URL}/synthesis",
+                    params={"speaker": voice.speaker_id},
+                    json=query_data
+                )
+
+                # 音声データをNumPy配列として読み込む
+                audio_buffer = io.BytesIO(synthesis_response.content)
+                audio_data, _ = sf.read(audio_buffer)
+
+                # 2つ目以降の音声で、前の音声との間隔を調整
+                if i > 0:
+                    if voice.pre_phoneme_length >= 0:
+                        silence_length = int(abs(voice.pre_phoneme_length) * sample_rate)
+                        silence = np.zeros(silence_length)
+                        audio_arrays.append(silence)
+                        current_position += len(silence) / sample_rate
+                        processed_voice["start"] = round(current_position, N_ROUND)
+                        processed_voice["end"] = round(current_position + len(audio_data) / sample_rate, N_ROUND)
+                        
+                    elif voice.pre_phoneme_length < 0:
+                        overlap_length = int(abs(voice.pre_phoneme_length) * sample_rate)
+                        # 結合済み音声のデータ
+                        concatenated_audio = np.concatenate(audio_arrays)
+                        overlap_start = len(concatenated_audio) - overlap_length
+
+                        # 新しい結合音声を作成
+                        combined = np.zeros(overlap_start + len(audio_data))
+                        combined[:len(concatenated_audio)] = concatenated_audio  # 前の音声を全て保持
+                        combined[overlap_start:overlap_start + len(audio_data)] += audio_data  # 新しい音声を加算（重ね合わせる）
+                        
+                        # 時間情報を追加
+                        start_time = overlap_start / sample_rate
+                        processed_voice["start"] = round(start_time, N_ROUND)
+                        processed_voice["end"] = round(start_time + len(audio_data) / sample_rate, N_ROUND)
+                        
+                        audio_arrays = [combined]
+                        current_position = len(combined) / sample_rate
+                        processed_voices.append(processed_voice)
+                        continue
+                else:
+                    processed_voice["start"] = 0
+                    processed_voice["end"] = round(len(audio_data) / sample_rate, N_ROUND)
+                    print(f'start-end: {processed_voice["start"]}~{processed_voice["end"]}')
+                    current_position = len(audio_data) / sample_rate
+                
+                audio_arrays.append(audio_data)
+                processed_voices.append(processed_voice)
+                print(f"音声{i+1}の処理完了")
+
+        # 全ての音声データを結合
+        print("全音声の結合")
+        combined_audio = np.concatenate(audio_arrays)
+        
+        # 結合した音声データをバイナリに変換
+        output_buffer = io.BytesIO()
+        sf.write(output_buffer, combined_audio, sample_rate, format='WAV')
+        output_buffer.seek(0)
+        
+        # レスポンスデータの作成
+        response_data = {
+            "title": request.title,
+            "left_chara": request.left_chara,
+            "right_chara": request.right_chara,
+            "left_chara_path": request.left_chara_path,
+            "right_chara_path": request.right_chara_path,
+            "voices": processed_voices
+        }
+        
+        return JSONResponse({
+            "audio": base64.b64encode(output_buffer.getvalue()).decode('utf-8'),
+            "script": response_data
+        })
+
     except Exception as e:
-        logger.error(f"Failed to connect to VOICEVOX server: {str(e)}")
+        print(f"エラー発生: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/play_manzai_anime")
+async def play_manzai_anime(script_data: dict):
+    """漫才アニメーションを再生するエンドポイント"""
+    ManzaiVideoGenerator.generate(
+        script_data=script_data,
+        audio_path="output_script.wav"
+    )
+    return JSONResponse({"status": "Animation saved"})
