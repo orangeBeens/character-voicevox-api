@@ -8,8 +8,13 @@ dependencies = [
     "fastapi>=0.115.6",
     "httpx>=0.28.1",
     "ipykernel>=6.29.5",
+    "moviepy>=1.0.3",
+    "numpy>=2.2.1",
+    "pillow>=11.1.0",
     "pydantic>=2.10.4",
     "pydub>=0.25.1",
     "requests>=2.32.3",
+    "sounddevice>=0.5.1",
+    "soundfile>=0.13.0",
     "uvicorn>=0.34.0",
 ]

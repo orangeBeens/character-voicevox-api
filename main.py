@@ -3,13 +3,14 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from manzai.player import ManzaiVideoGenerator
 from pydantic import BaseModel, Field
+from pydub import AudioSegment
 from typing import List
 import httpx
 import io
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
-import base64
+import os
 
 app = FastAPI()
 
@@ -32,11 +33,12 @@ class TextRequest(BaseModel):
     speed_scale: float = Field(1.0, ge=0.5, le=2.0)
     pitch_scale: float = Field(0.0, ge=-0.15, le=0.15)
     intonation_scale: float = Field(0.0, ge=0.0, le=3.0)
-    pre_phoneme_length: float = Field(0.1, ge=-5.0, le=5.0)
-    post_phoneme_length: float = Field(0.0, ge=0.0, le=5.0)
+    pre_phoneme_length: float = Field(0.1, ge=-5.0, le=10.0)
+    post_phoneme_length: float = Field(0.0, ge=0.0, le=10.0)
 
 class ManzaiRequest(BaseModel):
     title:str
+    combi_name:str #コンビ名
     left_chara:str #キャラ名
     right_chara:str
     left_chara_path:str #キャラの画像パス
@@ -69,6 +71,9 @@ def debug_play(audio_binary: bytes):
         print(f"デバッグ再生でエラーが発生: {str(e)}\n")
         return False
 
+
+
+# 単一のテキストを音声変換する
 @app.post("/synthesis")
 async def generate_vvox_audio(request: TextRequest):
     try:
@@ -115,9 +120,6 @@ async def generate_vvox_audio(request: TextRequest):
                     status_code=500, 
                     detail="Failed to synthesize audio"
                 )
-            audio_data = io.BytesIO(synthesis_response.content)
-
-
 
             return StreamingResponse(
                 io.BytesIO(synthesis_response.content),
@@ -220,19 +222,33 @@ async def concat_vvox_audio(request: ManzaiRequest):
         sf.write(output_buffer, combined_audio, sample_rate, format='WAV')
         output_buffer.seek(0)
         
-        # レスポンスデータの作成
-        response_data = {
-            "title": request.title,
-            "left_chara": request.left_chara,
-            "right_chara": request.right_chara,
-            "left_chara_path": request.left_chara_path,
-            "right_chara_path": request.right_chara_path,
-            "voices": processed_voices
-        }
+        # # レスポンスデータの作成
+        # response_data = {
+        #     "title": request.title,
+        #     "left_chara": request.left_chara,
+        #     "right_chara": request.right_chara,
+        #     "left_chara_path": request.left_chara_path,
+        #     "right_chara_path": request.right_chara_path,
+        #     "voices": processed_voices
+        # }
+        
+        # return JSONResponse({
+        #     "audio": base64.b64encode(output_buffer.getvalue()).decode('utf-8'),
+        #     "script": response_data
+        # })
+        wav_audio = AudioSegment.from_wav(output_buffer)
+       
+        # ダウンロードパスの設定
+        download_path = os.path.expanduser("~/Downloads")
+        filename = f"{request.combi_name}_{request.title}.mp3"
+        filepath = os.path.join(download_path, filename)
+        
+        # MP3として保存
+        wav_audio.export(filepath, format="mp3")
         
         return JSONResponse({
-            "audio": base64.b64encode(output_buffer.getvalue()).decode('utf-8'),
-            "script": response_data
+            "success": True,
+            "file_path": filepath
         })
 
     except Exception as e:

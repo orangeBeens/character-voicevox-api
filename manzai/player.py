@@ -1,8 +1,7 @@
 from typing import Dict
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import VideoFileClip, AudioFileClip, ImageClip, CompositeVideoClip, ColorClip, TextClip
-import tempfile
+from moviepy.editor import VideoFileClip, AudioFileClip
 
 class ManzaiVideoGenerator:
     def __init__(self, script_data: Dict, audio_path: str = "output_concat.wav"):
