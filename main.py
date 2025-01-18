@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import json
 from manzai.player import ManzaiVideoGenerator
 from pydantic import BaseModel, Field
 from pydub import AudioSegment
@@ -11,6 +12,13 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 import os
+from dotenv import load_dotenv
+
+
+load_dotenv() #環境変数よみこみ
+# print(f'{os.environ["PRJ_ROOT"]}')
+
+SCRIPT_DIR = os.path.join(os.environ["PRJ_ROOT"], 'assets', 'manzai_scripts')
 
 app = FastAPI()
 
@@ -86,7 +94,7 @@ async def generate_vvox_audio(request: TextRequest):
                     "speaker": request.speaker_id
                 }
             )
-            
+
             if query_response.status_code != 200:
                 raise HTTPException(
                     status_code=500, 
@@ -221,21 +229,7 @@ async def concat_vvox_audio(request: ManzaiRequest):
         output_buffer = io.BytesIO()
         sf.write(output_buffer, combined_audio, sample_rate, format='WAV')
         output_buffer.seek(0)
-        
-        # # レスポンスデータの作成
-        # response_data = {
-        #     "title": request.title,
-        #     "left_chara": request.left_chara,
-        #     "right_chara": request.right_chara,
-        #     "left_chara_path": request.left_chara_path,
-        #     "right_chara_path": request.right_chara_path,
-        #     "voices": processed_voices
-        # }
-        
-        # return JSONResponse({
-        #     "audio": base64.b64encode(output_buffer.getvalue()).decode('utf-8'),
-        #     "script": response_data
-        # })
+
         wav_audio = AudioSegment.from_wav(output_buffer)
        
         # ダウンロードパスの設定
@@ -263,3 +257,47 @@ async def play_manzai_anime(script_data: dict):
         audio_path="output_script.wav"
     )
     return JSONResponse({"status": "Animation saved"})
+
+# 漫才の台本を保存
+@app.post("/save_manzai_script")
+async def save_manzai_script(script_data: dict):
+    try:
+        # ファイル名の生成
+        sanitized_title = script_data["title"].replace(" ", "_")
+        sanitized_combi = script_data["combi_name"].replace(" ", "_")
+        filename = f"{sanitized_title}_{sanitized_combi}.json"
+        
+        # manzai_scriptsディレクトリの作成
+        if not os.path.exists(SCRIPT_DIR):
+            os.makedirs(SCRIPT_DIR)
+            
+        # JSONファイルの保存
+        filepath = os.path.join(SCRIPT_DIR, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(script_data, f, ensure_ascii=False, indent=2)
+            
+        return JSONResponse({
+            "success": True,
+            "message": "台本を保存しました",
+            "filepath": filepath
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 漫才の台本一覧を取得
+@app.get("/get_manzai_scripts")
+async def get_manzai_scripts():
+    try:
+        scripts = []
+        
+        if os.path.exists(SCRIPT_DIR):
+            for filename in os.listdir(SCRIPT_DIR):
+                if filename.endswith('.json'):
+                    with open(os.path.join(SCRIPT_DIR, filename), 'r', encoding='utf-8') as f:
+                        script_data = json.load(f)
+                        script_data['filename'] = filename
+                        scripts.append(script_data)
+                        
+        return scripts
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
