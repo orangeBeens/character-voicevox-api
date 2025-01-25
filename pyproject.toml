@@ -5,17 +5,29 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "black>=24.10.0",
     "fastapi>=0.115.6",
     "httpx>=0.28.1",
     "ipykernel>=6.29.5",
     "moviepy>=1.0.3",
     "numpy>=2.2.1",
     "pillow>=11.1.0",
+    "pydantic-settings>=2.7.1",
     "pydantic>=2.10.4",
     "pydub>=0.25.1",
     "python-dotenv>=1.0.1",
     "requests>=2.32.3",
+    "ruff>=0.9.2",
     "sounddevice>=0.5.1",
     "soundfile>=0.13.0",
     "uvicorn>=0.34.0",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+select = ["E", "F", "I", "B"]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
