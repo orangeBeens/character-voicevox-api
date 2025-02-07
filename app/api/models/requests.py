@@ -15,10 +15,10 @@ class TextRequest(BaseModel):
 
 
 class ManzaiRequest(BaseModel):
-    title: str
-    combi_name: str
-    left_chara: str
-    right_chara: str
-    left_chara_path: str
-    right_chara_path: str
+    title: str = Field(..., min_length=1)
+    combi_name: str = Field(..., min_length=1)
+    left_chara: str = Field(..., min_length=1)
+    right_chara: str = Field(..., min_length=1)
+    left_chara_path: str = Field(..., min_length=1)
+    right_chara_path: str = Field(..., min_length=1)
     voices: List[TextRequest]

@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import manzai, scripts, synthesis
+from app.api.routes import manzai, scripts
+from app.core.handlers import setup_exception_handlers
 
 app = FastAPI()
 
-# CORSミドルウェアの設定
+# CORS設定
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,12 +15,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# プレフィックスなしでルーターを登録
-app.include_router(scripts.router)
-app.include_router(manzai.router)
-app.include_router(synthesis.router)
+# エラーハンドラーの設定
+setup_exception_handlers(app)
 
-# または、APIプレフィックスを付ける場合は以下のように設定
-# app.include_router(scripts.router, prefix="/api")
-# app.include_router(manzai.router, prefix="/api")
-# app.include_router(synthesis.router, prefix="/api")
+# ルーターの登録
+app.include_router(manzai.router, prefix="/manzai", tags=["manzai"])
+app.include_router(scripts.router, prefix="/scripts", tags=["scripts"])
